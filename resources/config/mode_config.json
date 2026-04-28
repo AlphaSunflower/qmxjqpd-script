@@ -1,0 +1,100 @@
+{
+  "version": "1.0.0",
+  "modes": {
+    "dynasty_55": {
+      "display_name": "5V5全场争霸",
+      "group": "dynasty",
+      "options": [
+        {
+          "id": "auto_attack",
+          "display_name": "自动进攻",
+          "default": false
+        },
+        {
+          "id": "auto_defend",
+          "display_name": "自动防守",
+          "default": false
+        },
+        {
+          "id": "aggressive_rebound",
+          "display_name": "积极抢板",
+          "default": false
+        }
+      ]
+    },
+    "dynasty_33": {
+      "display_name": "王朝模式3V3",
+      "group": "dynasty",
+      "options": [
+        {
+          "id": "score_priority",
+          "display_name": "优先得分",
+          "default": false
+        },
+        {
+          "id": "defense_priority",
+          "display_name": "防守优先",
+          "default": false
+        }
+      ]
+    },
+    "chaolian_front": {
+      "display_name": "季前赛",
+      "group": "chaolian",
+      "options": [
+        {
+          "id": "only_thirty_match",
+          "display_name": "只打30场",
+          "default": false
+        },
+        {
+          "id": "is_inter_match",
+          "display_name": "进入局内",
+          "default": false
+        },
+        {
+          "id": "is_excu_strategy",
+          "display_name": "执行战术（默认鼓舞士气）",
+          "default": false
+        }
+      ]
+    },
+    "chaolian_challenge": {
+      "display_name": "挑战赛",
+      "group": "chaolian",
+      "options": [
+        {
+          "id": "is_inter_match",
+          "display_name": "进入局内",
+          "default": false
+        },
+        {
+          "id": "is_excu_strategy",
+          "display_name": "执行战术（默认鼓舞士气）",
+          "default": false
+        }
+      ]
+    },
+    "chaolian_step": {
+      "display_name": "天梯赛",
+      "group": "chaolian",
+      "options": [
+        {
+          "id": "only_thirty_match",
+          "display_name": "只打30场",
+          "default": false
+        },
+        {
+          "id": "is_inter_match",
+          "display_name": "进入局内",
+          "default": false
+        },
+        {
+          "id": "is_excu_strategy",
+          "display_name": "执行战术（默认鼓舞士气）",
+          "default": false
+        }
+      ]
+    }
+  }
+}
