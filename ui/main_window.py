@@ -667,8 +667,9 @@ class MainWindow(ctk.CTk):
         except Exception:
             pass
         finally:
-            # 始终继续轮询，即使出错也不中断
-            self.after(50, self._poll_log_queue)
+            # 根据队列积压动态调整轮询间隔，有积压时加快，空闲时放慢
+            delay = 30 if logger.get_queue_size() > 10 else 150
+            self.after(delay, self._poll_log_queue)
 
     # ==================== 核心逻辑 ====================
 
@@ -838,26 +839,17 @@ class MainWindow(ctk.CTk):
 
         self.manager.start(strategy_classes)
 
-        # 后台线程：等待所有端口上报屏幕尺寸后刷新 UI 状态
-        def watch_sizes(expected_ports):
-            import time
-            from core.strategy_manager import get_all_screen_sizes
-            for _ in range(30):
-                if stop_event.is_set():
-                    return
-                sizes = get_all_screen_sizes()
-                if all(p in sizes for p in expected_ports):
-                    self.after(0, lambda s=sizes: self._on_sizes_ready(s))
-                    return
-                time.sleep(0.5)
-
-        threading.Thread(target=watch_sizes, args=(ports,), daemon=True).start()
-
         self.start_btn.configure(state="disabled", text="执行中...")
         self.stop_btn.configure(state="normal")
 
-        # 监控线程
-        threading.Thread(target=self._watch_manager, daemon=True).start()
+        # 引导线程：等待屏幕尺寸 → 监控运行 → 清理
+        self._bootstrap = threading.Thread(
+            target=self._run_bootstrap,
+            args=(ports,),
+            daemon=True,
+            name="BootstrapThread"
+        )
+        self._bootstrap.start()
 
     def _on_sizes_ready(self, sizes: dict):
         """所有端口屏幕尺寸获取完毕后，在日志中汇总打印"""
@@ -866,25 +858,48 @@ class MainWindow(ctk.CTk):
             lines.append(f"  端口 {port}: {size[0]}x{size[1]}")
         logger.info("屏幕分辨率:\n" + "\n".join(lines))
 
-    def _watch_manager(self):
+    def _run_bootstrap(self, expected_ports):
+        """后台引导线程：等待屏幕尺寸 → 监控运行 → 清理"""
         import time
-        while self.manager and self.manager.is_running():
+        from core.strategy_manager import get_all_screen_sizes
+
+        # 阶段 1：等待屏幕尺寸
+        for _ in range(30):
+            if stop_event.is_set():
+                break
+            sizes = get_all_screen_sizes()
+            if all(p in sizes for p in expected_ports):
+                self.after(0, lambda s=sizes: self._on_sizes_ready(s))
+                break
             time.sleep(0.5)
-        
+
+        # 阶段 2：等待管理器停止（或所有线程自然结束）
+        while self.manager and self.manager.is_running():
+            # 检测所有工作线程是否已提前退出（如连接失败）
+            if self.manager.threads and all(not t.is_alive() for t in self.manager.threads):
+                logger.info("所有策略线程已提前退出，开始清理")
+                break
+            time.sleep(0.5)
+
+        # 阶段 3：清理（stop 回调或此处触发，_on_execution_finished 自带防重入）
         if self.manager:
-            self.manager.stop()
+            self.manager.join_all(timeout=5)
         self.after(0, self._on_execution_finished)
 
     def _on_execution_finished(self):
+        if self.manager is None:
+            return  # 已清理，防止 bootstrap 与 stop 回调重复触发
         self.start_btn.configure(state="normal", text="开始执行")
-        self.stop_btn.configure(state="disabled")
+        self.stop_btn.configure(state="disabled", text="停止执行")
         self.manager = None
         logger.info("执行完成")
 
     def _on_stop(self):
+        if not self.manager or not self.manager.is_running():
+            return
         logger.info("正在停止...")
-        if self.manager:
-            self.manager.stop()
+        self.stop_btn.configure(state="disabled", text="停止中...")
+        self.manager.stop(on_finished=lambda: self.after(0, self._on_execution_finished))
 
     def _schedule_midnight(self):
         if hasattr(self, "_midnight_timer") and self._midnight_timer:

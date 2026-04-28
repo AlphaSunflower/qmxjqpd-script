@@ -5,14 +5,14 @@
     ],
     "click_offset": 10,
     "strategy_options": {
-        "chaolian_front": {
+        "chaolian_step": {
             "only_thirty_match": true,
             "is_inter_match": true,
-            "is_excu_strategy": false
+            "is_excu_strategy": true
         }
     },
     "midnight_enabled": false,
     "version": "1.0.0",
     "selected_group": "chaolian",
-    "selected_mode": "chaolian_front"
+    "selected_mode": "chaolian_step"
 }

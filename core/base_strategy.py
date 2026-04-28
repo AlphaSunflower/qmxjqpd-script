@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 import sys
 import time
@@ -8,7 +9,7 @@ from abc import ABC, abstractmethod
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from services.adb_service import ADBService
-from services.image_service import ImageService
+from services.image_service import image_service
 from services.logger_service import logger
 from core.strategy_manager import stop_event, register_screen_size
 
@@ -44,7 +45,7 @@ class BaseStrategy(ABC):
             self.adb = ADBService(port=self.port)
             if not self.adb.connect():
                 return False
-            self.image = ImageService()
+            self.image = image_service
 
             size = self.adb.get_screen_size()
             if size:
@@ -97,6 +98,7 @@ class BaseStrategy(ABC):
         if self.adb is None:
             return False
         self.adb.tap(tap_x, tap_y)
+        self.adb.invalidate_screen_cache()
         return True
 
     def _match_template(self, template_name: str, threshold: float = 0.8) -> tuple:
@@ -187,7 +189,7 @@ class BaseStrategy(ABC):
             if screen is None:
                 return []
 
-        return self.image.ocr_text(screen)
+        return self.image.ocr_text(screen, stop_check=stop_event.is_set)
 
     def _ocr_area_async(self, area: tuple = None) -> str:
         """
@@ -280,6 +282,7 @@ class BaseStrategy(ABC):
             sx1, sy1 = self._scale_coords(x1, y1)
             sx2, sy2 = self._scale_coords(x2, y2)
             self.adb.swipe(sx1, sy1, sx2, sy2, duration)
+            self.adb.invalidate_screen_cache()
 
     def _sleep(self, seconds: float):
         """
@@ -333,27 +336,6 @@ class BaseStrategy(ABC):
                 if context in e:
                     return True
         return False
-    #TODO 解决此问题
-    def _turn_mode(self, now_mode,to_mode):
-        '''
-        从什么模式切换什么模式
-        '''
-        if now_mode=="qmzb" and to_mode == "wc":
-            pass
-        elif now_mode=="wc" and to_mode == "qmzb":
-            pass
-        elif now_mode=="11" and to_mode == "qmzb":
-            pass
-        elif now_mode=="11" and to_mode == "wc":
-            pass
-        elif now_mode=="dfs" and to_mode == "11":
-            pass
-        elif now_mode=="22" and to_mode == "11":
-             pass
-        elif now_mode=="33" and to_mode == "11":
-             pass
-
-
     @abstractmethod
     def _execute(self):
         """

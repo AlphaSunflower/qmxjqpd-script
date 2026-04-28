@@ -8,57 +8,25 @@ import uuid
 import concurrent.futures
 import multiprocessing
 multiprocessing.freeze_support()
-os.environ["FLAGS_enable_pir_api"] = "0"
-os.environ["FLAGS_pir_apply_inplace_pass"] = "0"
-os.environ["FLAGS_enable_new_executor"] = "0"
-os.environ["FLAGS_use_mkldnn"] = "0"
-from paddleocr import PaddleOCR
-# from paddlex import create_model
+
+# 打包后指定模型缓存目录，避免 RapidOCR 尝试从网络下载模型
+if hasattr(sys, '_MEIPASS'):
+    os.environ.setdefault('RAPIDOCR_HOME', os.path.join(sys._MEIPASS, 'rapidocr_models'))
+
+from rapidocr_onnxruntime import RapidOCR
 from services.logger_service import logger
-from PIL import Image
-def get_real_path(relative_path):
-    if hasattr(sys, '_MEIPASS'):
-        return os.path.join(sys._MEIPASS, relative_path)
-    return os.path.abspath(".")
+
 class ImageService:
     def __init__(self):
-        # 初始化 PaddleOCR
-        # use_angle_cls=True 启用方向分类
-        # lang='ch' 支持中文识别 (chinese)
-        # 默认使用 ch 模型，它同时支持中文、英文和数字
+        # 模板图片缓存
+        self._template_cache: dict = {}
+
+        # 初始化 RapidOCR（ONNX 推理，中文识别 + 方向分类）
         try:
-            import os
-            import sys
-            
-            # 获取打包后的资源路径
-            if hasattr(sys, '_MEIPASS'):
-                model_dir = os.path.join(sys._MEIPASS, 'paddleocr', 'ppocr')
-            else:
-                model_dir = None
-
-            # 移除 show_log 参数，新版本 PaddleOCR 可能不支持
-            ocr_params = {
-                'use_angle_cls': True,
-                'lang': 'ch',
-                'enable_mkldnn': False,
-                'device': 'cpu'
-            }
-
-            # 如果是打包环境，尝试指定模型路径
-            if model_dir and os.path.exists(model_dir):
-                ocr_params['det_model_dir'] = os.path.join(model_dir, 'models', 'det')
-                ocr_params['rec_model_dir'] = os.path.join(model_dir, 'models', 'rec')
-                ocr_params['cls_model_dir'] = os.path.join(model_dir, 'models', 'cls')
-
-            self.ocr = PaddleOCR(**ocr_params)
-            # self.ocr = create_model("OCR", lang="ch")
-            # 尝试抑制 PaddleOCR 自身的日志输出 (如果需要)
-            import logging
-            logging.getLogger("ppocr").setLevel(logging.ERROR)
-
-            logger.info("PaddleOCR 初始化成功 (语言: 中文/ch)。")
+            self.ocr = RapidOCR()
+            logger.info("RapidOCR 初始化成功 (语言: 中文)。")
         except Exception as e:
-            logger.error(f"PaddleOCR 初始化失败: {e}")
+            logger.error(f"RapidOCR 初始化失败: {e}")
             self.ocr = None
 
         # SIFT 特征检测器
@@ -70,22 +38,28 @@ class ImageService:
         self.flann = cv2.FlannBasedMatcher(index_params, search_params)
 
         # OCR 异步线程池
-        self._ocr_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="OCRWorker")
+        self._ocr_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="OCRWorker")
         self._ocr_pending: dict = {}  # request_id -> Future
 
     def bytes_to_cv2(self, image_bytes):
         """
-        将原始二进制数据转换为 OpenCV 图像格式
-        image_bytes: 图片的二进制数据
-        返回: OpenCV BGR 格式的图像
+        将原始二进制数据转换为 OpenCV BGR 格式。
         """
         if image_bytes is None:
             return None
-        image = Image.open(io.BytesIO(image_bytes))
-        image_np = np.array(image)
-        # 将 RGB 转换为 BGR
-        image_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
-        return image_bgr
+        arr = np.frombuffer(image_bytes, dtype=np.uint8)
+        return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+    def _get_template(self, template_path, grayscale=False):
+        """从缓存获取模板图片，缓存未命中时从磁盘加载。"""
+        cache_key = (template_path, grayscale)
+        if cache_key not in self._template_cache:
+            mode = 0 if grayscale else 1
+            template = cv2.imread(template_path, mode)
+            if template is None:
+                return None
+            self._template_cache[cache_key] = template
+        return self._template_cache[cache_key]
 
     def match_template(self, screen_img, template_path, threshold=0.8):
         """
@@ -99,7 +73,7 @@ class ImageService:
             if isinstance(screen_img, (bytes, bytearray)):
                 screen_img = self.bytes_to_cv2(screen_img)
             
-            template = cv2.imread(template_path)
+            template = self._get_template(template_path)
             if template is None:
                 logger.error(f"未找到模板图片: {template_path}")
                 return None
@@ -131,11 +105,11 @@ class ImageService:
             if isinstance(screen_img, (bytes, bytearray)):
                 screen_img = self.bytes_to_cv2(screen_img)
 
-            template = cv2.imread(template_path, 0) # 读取为灰度图
+            template = self._get_template(template_path, grayscale=True)
             if template is None:
                 logger.error(f"未找到模板图片: {template_path}")
                 return None
-            
+
             target = cv2.cvtColor(screen_img, cv2.COLOR_BGR2GRAY) # 转换为灰度图
 
             # 使用 SIFT 检测关键点和描述符
@@ -160,7 +134,7 @@ class ImageService:
 
                 # 计算单应性矩阵
                 M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
-                
+
                 if M is None:
                     return None
 
@@ -171,7 +145,7 @@ class ImageService:
                 # 计算变换后区域的中心
                 center_x = int(np.mean(dst[:, 0, 0]))
                 center_y = int(np.mean(dst[:, 0, 1]))
-                
+
                 logger.debug(f"SIFT 匹配成功: {template_path} 匹配点数 {len(good)}")
                 return (center_x, center_y)
             else:
@@ -193,11 +167,11 @@ class ImageService:
             if isinstance(screen_img, (bytes, bytearray)):
                 screen_img = self.bytes_to_cv2(screen_img)
 
-            template = cv2.imread(template_path, 0) # 读取为灰度图
+            template = self._get_template(template_path, grayscale=True)
             if template is None:
                 logger.error(f"未找到模板图片: {template_path}")
                 return 0, None
-            
+
             target = cv2.cvtColor(screen_img, cv2.COLOR_BGR2GRAY) # 转换为灰度图
 
             # 使用 SIFT 检测关键点和描述符
@@ -243,126 +217,31 @@ class ImageService:
             logger.error(f"SIFT 匹配出错: {e}")
             return 0, None
 
-    def ocr_text(self, screen_img, area=None):
-        """
-        识别图像中的文字
-        screen_img: 屏幕截图
-        area: 裁剪区域 (x, y, w, h)
-        返回: 识别到的文本列表
-        """
-        if self.ocr is None:
-            return []
-            
-        try:
-            if isinstance(screen_img, (bytes, bytearray)):
-                screen_img = self.bytes_to_cv2(screen_img)
-
-            if area:
-                x, y, w, h = area
-                screen_img = screen_img[y:y+h, x:x+w]
-
-            # 调试：保存送入 OCR 的图片，方便分析
-            # debug_path = "logs/debug_ocr_input.png"
-            # cv2.imwrite(debug_path, screen_img)
-            # logger.debug(f"已保存 OCR 输入图片至 {debug_path}")
-
-            # PaddleOCR 的 predict 方法在某些版本中可能存在参数兼容性问题
-            # 尝试直接调用，如果失败则使用位置参数
-                # 尝试标准调用，明确指定参数名以避免位置参数混淆
-                # 显式关闭 cls (方向分类)，对于游戏截图通常不需要且可能导致误判
-                # 如果发现文字方向识别错误，可以改为 cls=True
-            result = self.ocr.ocr(screen_img)
-
-            texts = []
-            if result:
-                logger.debug(f"OCR 原始返回结果类型: {type(result)}")
-
-                # 检查是否为 PaddleX / New PaddleOCR 格式 (result[0] 是 dict)
-                if len(result) > 0 and isinstance(result[0], dict) and 'rec_texts' in result[0]:
-                    res_dict = result[0]
-                    texts_list = res_dict.get('rec_texts', [])
-                    scores_list = res_dict.get('rec_scores', [])
-
-                    for i, text in enumerate(texts_list):
-                        score = scores_list[i] if i < len(scores_list) else 1.0
-                        logger.debug(f"OCR 识别: '{text}' (置信度: {score:.2f})")
-                        texts.append(text)
-                else:
-                    # PaddleOCR 返回的结构可能是 [ [ [points], (text, conf) ], ... ]
-                    # 也可能是空列表 [] 如果没识别到
-                    # 注意：result[0] 在某些版本/情况下可能是 None
-                    lines = result[0] if result[0] is not None else []
-
-                    for line in lines:
-                        try:
-                            # line format: [[points], (text, confidence)]
-                            # 或者 [[points], text]
-                            if line and len(line) >= 2:
-                                content = line[1]
-                                text = ""
-                                confidence = 1.0
-
-                                if isinstance(content, (list, tuple)) and len(content) >= 1:
-                                    text = content[0]
-                                    confidence = content[1] if len(content) > 1 else 1.0
-                                elif isinstance(content, str):
-                                    text = content
-                                    confidence = 1.0 # 无法获取置信度
-                                else:
-                                    logger.warning(f"OCR line[1] 格式未知: {type(content)} - {content}")
-                                    continue
-
-                                logger.debug(f"OCR 识别: '{text}' (置信度: {confidence:.2f})")
-                                texts.append(text)
-                        except Exception as e:
-                            logger.error(f"解析 OCR 行数据失败: {e}, line数据: {line}")
-
-            
-            logger.debug(f"OCR 最终结果列表: {texts}")
-            return texts
-        except Exception as e:
-            logger.error(f"OCR 错误: {e}")
-            return []
-
     def _parse_ocr_result(self, raw_result):
         """
-        解析 PaddleOCR 原始输出，提取文本列表。
-        供 ocr_text 和 ocr_poll 共用。
+        解析 RapidOCR 输出，提取文本列表。
+        RapidOCR 返回格式: [[box, text, score], ...] 或 None
         """
         texts = []
         if not raw_result:
             return texts
-
-        if len(raw_result) > 0 and isinstance(raw_result[0], dict) and 'rec_texts' in raw_result[0]:
-            res_dict = raw_result[0]
-            texts_list = res_dict.get('rec_texts', [])
-            scores_list = res_dict.get('rec_scores', [])
-            for i, text in enumerate(texts_list):
-                score = scores_list[i] if i < len(scores_list) else 1.0
-                texts.append(text)
-        else:
-            lines = raw_result[0] if raw_result[0] is not None else []
-            for line in lines:
-                try:
-                    if line and len(line) >= 2:
-                        content = line[1]
-                        if isinstance(content, (list, tuple)) and len(content) >= 1:
-                            text = content[0]
-                        elif isinstance(content, str):
-                            text = content
-                        else:
-                            continue
+        for item in raw_result:
+            try:
+                if len(item) >= 2:
+                    text = item[1]
+                    if text:
                         texts.append(text)
-                except Exception:
-                    continue
+            except Exception:
+                continue
         return texts
 
     def _ocr_engine(self, processed_img):
         """
         运行在 OCR 线程池中的推理方法。
-        只执行 PaddleOCR 核心推理，持有 GIL 的操作在此完成。
+        只执行 RapidOCR 核心推理。
         """
-        return self.ocr.ocr(processed_img)
+        result, _ = self.ocr(processed_img)
+        return result
 
     def ocr_text_async(self, screen_img, area=None):
         """
@@ -413,22 +292,30 @@ class ImageService:
             del self._ocr_pending[request_id]
             return []
 
-    def ocr_text(self, screen_img, area=None):
+    def ocr_text(self, screen_img, area=None, stop_check=None):
         """
         同步 OCR，兼容旧接口。
-        内部使用异步提交 + 轮询等待，不阻塞 Tkinter 主线程。
+        使用 Future.result(timeout) 实现可中断等待，支持 stop_check 回调。
         """
         if self.ocr is None:
             return []
         request_id = self.ocr_text_async(screen_img, area)
         if request_id is None:
             return []
+        if request_id not in self._ocr_pending:
+            return []
+        future = self._ocr_pending[request_id]
         import time
-        for _ in range(50):
-            result = self.ocr_poll(request_id)
-            if result is not None:
-                return result
-            time.sleep(0.1)
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            if stop_check and stop_check():
+                return []
+            try:
+                raw = future.result(timeout=0.2)
+                del self._ocr_pending[request_id]
+                return self._parse_ocr_result(raw)
+            except concurrent.futures.TimeoutError:
+                continue
         logger.warning("OCR 同步等待超时")
         return []
 

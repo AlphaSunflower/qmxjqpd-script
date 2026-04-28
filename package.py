@@ -1,8 +1,9 @@
-import paddlex
-import importlib.metadata
+import os
+import sys
 import argparse
 import subprocess
-import sys
+
+from pathlib import Path
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--file', required=True, help='Your file name, e.g. main.py.')
@@ -12,26 +13,34 @@ args = parser.parse_args()
 
 main_file = args.file
 
-user_deps = [dist.metadata["Name"] for dist in importlib.metadata.distributions()]
-deps_all = list(paddlex.utils.deps.BASE_DEP_SPECS.keys())
-deps_need = [dep for dep in user_deps if dep in deps_all]
+# 检查 RapidOCR 模型是否已下载
+model_cache = Path.home() / '.rapidocr'
+if not model_cache.exists():
+    print(f"提示: 未找到 RapidOCR 模型缓存目录 ({model_cache})")
+    print("首次运行时 RapidOCR 会自动下载模型（约 10-20 MB）。")
+else:
+    print(f"找到模型缓存目录: {model_cache}")
+    size = sum(f.stat().st_size for f in model_cache.rglob('*') if f.is_file())
+    print(f"  模型大小: {size / 1024 / 1024:.1f} MB")
 
 cmd = [
     "pyinstaller",
     "-w",
     main_file,
-    "--collect-data", "paddlex",
-    "--collect-binaries", "paddle",
-    "--add-data","config;config" ,
-    "--add-data","resources;resources",
-    "--collect-all","cv2"
+    "--add-data", f"config{os.pathsep}config",
+    "--add-data", f"resources{os.pathsep}resources",
+    "--collect-all", "cv2",
+    "--collect-all", "rapidocr_onnxruntime",
+    "--collect-binaries", "onnxruntime",
 ]
+
+# 将 RapidOCR 模型打包进 exe（如果已下载）
+if model_cache.exists():
+    cmd += ["--add-data", f"{model_cache}{os.pathsep}.rapidocr"]
+    print("已添加 RapidOCR 模型文件到打包列表。")
 
 if args.nvidia:
     cmd += ["--collect-binaries", "nvidia"]
-
-for dep in deps_need:
-    cmd += ["--copy-metadata", dep]
 
 print("PyInstaller command:", " ".join(cmd))
 

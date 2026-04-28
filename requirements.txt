@@ -1,0 +1,19 @@
+# 超联自动化工具 依赖列表
+# 安装: pip install -r requirements.txt
+
+# UI 框架
+customtkinter>=5.2.0
+
+# 图像处理
+opencv-python>=4.10.0
+pillow>=10.0.0
+numpy>=1.24.0
+
+# ADB 设备控制
+pure-python-adb>=0.3.0
+
+# OCR 文字识别 (ONNX 推理，无 Paddle 依赖)
+rapidocr-onnxruntime>=1.3.0
+
+# 打包工具（仅打包时需要）
+# pyinstaller>=6.0.0

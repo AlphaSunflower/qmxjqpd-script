@@ -1,11 +1,16 @@
 import os
+import threading
 import time
 import subprocess
+import sys
 from ppadb.client import Client as AdbClient
 from services.logger_service import logger
 import json
 import io
 from PIL import Image
+
+# Windows 下防止 subprocess 弹出控制台黑窗
+_CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
 
 
 class ADBService:
@@ -19,17 +24,23 @@ class ADBService:
         self.device = None
         self.host = host
         self.port = port if port is not None else 16384
+        self._screen_cache = None
+        self._screen_cache_time = 0.0
+        self._cache_lock = threading.Lock()
 
-    def connect(self):
+    def connect(self, retries: int = 3, retry_delay: float = 1.0):
         """
-        连接到 ADB 服务器和设备
+        连接到 ADB 服务器和设备，支持重试。
+        :param retries: 最大重试次数（查找设备阶段）
+        :param retry_delay: 重试间隔（秒）
         返回: 连接成功返回 True，否则返回 False
         """
         try:
             subprocess.run(
                 ["adb", "start-server"],
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                stderr=subprocess.DEVNULL,
+                creationflags=_CREATE_NO_WINDOW,
             )
 
             self.client = AdbClient(host="127.0.0.1", port=5037)
@@ -39,20 +50,30 @@ class ADBService:
 
             subprocess.run(
                 ["adb", "connect", device_address],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=_CREATE_NO_WINDOW,
             )
 
-            devices = self.client.devices()
-            for device in devices:
-                if device.serial == device_address:
-                    self.device = device
-                    logger.info(f"[端口 {self.port}] 成功连接到设备: {device_address}")
-                    return True
+            # 重试查找设备（adb connect 后设备注册存在延迟）
+            for attempt in range(1, retries + 1):
+                time.sleep(retry_delay)
+                devices = self.client.devices()
+                for device in devices:
+                    if device.serial == device_address:
+                        self.device = device
+                        logger.info(f"[端口 {self.port}] 成功连接到设备: {device_address}")
+                        return True
+
+                if attempt < retries:
+                    logger.warning(
+                        f"[端口 {self.port}] 未找到设备 {device_address}，"
+                        f"第 {attempt}/{retries} 次重试..."
+                    )
 
             logger.error(
                 f"[端口 {self.port}] 未找到目标设备 {device_address}，"
-                f"当前可用设备: {[d.serial for d in devices]}"
+                f"当前可用设备: {[d.serial for d in self.client.devices()]}"
             )
             return False
 
@@ -69,27 +90,45 @@ class ADBService:
             subprocess.run(
                 ["adb", "disconnect", device_address],
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                stderr=subprocess.DEVNULL,
+                creationflags=_CREATE_NO_WINDOW,
             )
             self.device = None
             self.client = None
         except Exception as e:
             logger.warning(f"[端口 {self.port}] 断开连接时出错: {e}")
 
-    def screencap(self):
+    def screencap(self, use_cache: bool = True, cache_ttl: float = 0.3):
         """
         截取屏幕并返回二进制数据
+        use_cache: 是否使用缓存，默认 True
+        cache_ttl: 缓存有效期（秒），默认 0.3
         返回: 图片的二进制数据，失败返回 None
         """
         if not self.device:
             logger.error(f"[端口 {self.port}] 设备未连接")
             return None
         try:
+            if use_cache:
+                with self._cache_lock:
+                    if self._screen_cache is not None:
+                        if time.time() - self._screen_cache_time < cache_ttl:
+                            return self._screen_cache
             result = self.device.screencap()
+            if use_cache:
+                with self._cache_lock:
+                    self._screen_cache = result
+                    self._screen_cache_time = time.time()
             return result
         except Exception as e:
             logger.error(f"[端口 {self.port}] 截图失败: {e}")
             return None
+
+    def invalidate_screen_cache(self):
+        """清除截图缓存，在点击/滑动等改变屏幕的操作后调用"""
+        with self._cache_lock:
+            self._screen_cache = None
+            self._screen_cache_time = 0.0
 
     def screencap_area(self, x, y, w, h):
         """

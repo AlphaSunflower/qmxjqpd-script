@@ -1,0 +1,39 @@
+# ���������ļ���
+.*/
+
+# Python ����
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+*.so
+
+# ������Ŀ¼
+dist/
+build/
+
+# ��־Ŀ¼
+log/
+logs/
+*.log
+
+# ������������
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ���⻷��
+venv/
+.venv/
+env/
+myenv/
+.env
+
+# Claude Code
+skill-creator/
+
+# ������ʱ�ļ�
+.DS_Store
+*.tmp
+*.cache

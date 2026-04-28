@@ -42,6 +42,7 @@ class StrategyManager:
         self.ports = ports
         self.threads: List[threading.Thread] = []
         self._running = False
+        self._lock = threading.Lock()
 
     def _worker(self, port: int, strategy_classes: List[Type]):
         """
@@ -68,7 +69,8 @@ class StrategyManager:
             return
 
         stop_event.clear()
-        self._running = True
+        with self._lock:
+            self._running = True
         logger.info(f"策略管理器启动，共 {len(self.ports)} 个端口")
         logger.info(f"端口列表: {self.ports}")
 
@@ -85,22 +87,35 @@ class StrategyManager:
             self.threads.append(t)
             logger.info(f"[端口 {port}] 线程启动")
 
-    def stop(self):
+    def stop(self, on_finished=None):
         """
-        停止所有策略线程
+        向所有策略发送停止信号，启动后台线程等待线程结束。
+        :param on_finished: 可选回调，所有线程结束后在主线程调用
         """
         if not self._running:
             return
-
-        logger.info("正在停止所有策略...")
+        logger.info("正在向所有策略发送停止信号...")
         stop_event.set()
 
-        for t in self.threads:
-            t.join(timeout=5)
+        def _cleanup():
+            self.join_all(timeout=5)
+            if on_finished:
+                on_finished()
 
+        threading.Thread(target=_cleanup, daemon=True, name="StopCleanup").start()
+
+    def join_all(self, timeout: float = 5.0):
+        """
+        等待所有工作线程结束，阻塞操作，应在后台线程中调用。
+        """
+        logger.info("等待所有策略线程结束...")
+        for t in self.threads:
+            t.join(timeout=timeout)
         self.threads.clear()
-        self._running = False
-        logger.info("策略管理器已停止")
+        with self._lock:
+            self._running = False
+        logger.info("所有策略线程已结束")
 
     def is_running(self) -> bool:
-        return self._running
+        with self._lock:
+            return self._running
