@@ -16,7 +16,7 @@ class LoggerService:
 
     def _initialize_logger(self):
         self.logger = logging.getLogger("DragonBallAuto")
-        self.logger.setLevel(logging.DEBUG)
+        self.logger.setLevel(logging.INFO)
 
         formatter = logging.Formatter(
             '[%(asctime)s][%(threadName)s][%(levelname)s] %(message)s',
@@ -29,7 +29,7 @@ class LoggerService:
 
         today_str = datetime.datetime.now().strftime("%Y%m%d")
         file_handler = logging.FileHandler(f"{log_dir}/{today_str}.log", encoding='utf-8')
-        file_handler.setLevel(logging.DEBUG)
+        file_handler.setLevel(logging.INFO)
         file_handler.setFormatter(formatter)
         self.logger.addHandler(file_handler)
 
@@ -49,6 +49,9 @@ class LoggerService:
             self.logger.warning(message)
         elif level == "ERROR":
             self.logger.error(message)
+
+        if level not in ("INFO", "ERROR"):
+            return
 
         timestamp = datetime.datetime.now().strftime('%H:%M:%S')
         formatted_msg = f"[{timestamp}][{level}] {message}"

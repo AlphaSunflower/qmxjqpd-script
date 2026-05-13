@@ -14,6 +14,9 @@ _CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 
 
 
 class ADBService:
+    MAX_RECONNECT_ATTEMPTS = 5
+    RECONNECT_BASE_DELAY = 2.0
+
     def __init__(self, port=None, host="127.0.0.1"):
         """
         初始化 ADB 服务
@@ -27,6 +30,86 @@ class ADBService:
         self._screen_cache = None
         self._screen_cache_time = 0.0
         self._cache_lock = threading.Lock()
+        self._reconnect_count = 0
+        self._last_reconnect_time = 0.0
+        self._reconnect_lock = threading.Lock()
+
+    @staticmethod
+    def _is_connection_error(exception: Exception) -> bool:
+        """检测异常是否为设备断连错误。"""
+        msg = str(exception).lower()
+        if "device" in msg and ("not found" in msg or "offline" in msg):
+            return True
+        if "connection" in msg and ("refused" in msg or "reset" in msg or "broken pipe" in msg):
+            return True
+        if isinstance(exception, RuntimeError):
+            return True
+        return False
+
+    def is_device_ready(self) -> bool:
+        """快速检测设备是否已连接且响应正常。"""
+        if not self.device:
+            return False
+        try:
+            result = self.device.shell("echo ok")
+            return result is not None and "ok" in str(result)
+        except Exception:
+            return False
+
+    def reconnect(self, stop_check=None) -> bool:
+        """
+        尝试完整重连设备，指数退避。
+        :param stop_check: 可选 callable，返回 True 时中断等待
+        :return: 重连成功返回 True
+        """
+        with self._reconnect_lock:
+            if self._reconnect_count > 0 and (time.time() - self._last_reconnect_time) < 30:
+                return self.is_device_ready()
+
+            self._reconnect_count += 1
+            self._last_reconnect_time = time.time()
+
+            if self._reconnect_count > self.MAX_RECONNECT_ATTEMPTS:
+                logger.error(
+                    f"[端口 {self.port}] 已达到最大重连次数 ({self.MAX_RECONNECT_ATTEMPTS})，放弃重连"
+                )
+                return False
+
+            delay = self.RECONNECT_BASE_DELAY * (2 ** (self._reconnect_count - 1))
+            logger.warning(
+                f"[端口 {self.port}] 设备断开，将在 {delay:.0f}s 后尝试重连 "
+                f"(第 {self._reconnect_count}/{self.MAX_RECONNECT_ATTEMPTS} 次)..."
+            )
+
+            if stop_check:
+                waited = 0.0
+                while waited < delay:
+                    if stop_check():
+                        return False
+                    time.sleep(min(1.0, delay - waited))
+                    waited += 1.0
+            else:
+                time.sleep(delay)
+
+            try:
+                self.disconnect()
+            except Exception:
+                pass
+
+            success = self.connect()
+            if success:
+                self._reconnect_count = 0
+                self.invalidate_screen_cache()
+                logger.info(f"[端口 {self.port}] 重连成功")
+            else:
+                logger.error(f"[端口 {self.port}] 重连失败")
+
+            return success
+
+    def reset_reconnect_counter(self):
+        """重置重连计数器。"""
+        with self._reconnect_lock:
+            self._reconnect_count = 0
 
     def connect(self, retries: int = 3, retry_delay: float = 1.0):
         """
@@ -100,7 +183,7 @@ class ADBService:
 
     def screencap(self, use_cache: bool = True, cache_ttl: float = 0.3):
         """
-        截取屏幕并返回二进制数据
+        截取屏幕并返回二进制数据。连接错误时自动重连并重试一次。
         use_cache: 是否使用缓存，默认 True
         cache_ttl: 缓存有效期（秒），默认 0.3
         返回: 图片的二进制数据，失败返回 None
@@ -108,21 +191,33 @@ class ADBService:
         if not self.device:
             logger.error(f"[端口 {self.port}] 设备未连接")
             return None
-        try:
-            if use_cache:
-                with self._cache_lock:
-                    if self._screen_cache is not None:
-                        if time.time() - self._screen_cache_time < cache_ttl:
-                            return self._screen_cache
-            result = self.device.screencap()
-            if use_cache:
-                with self._cache_lock:
-                    self._screen_cache = result
-                    self._screen_cache_time = time.time()
-            return result
-        except Exception as e:
-            logger.error(f"[端口 {self.port}] 截图失败: {e}")
-            return None
+
+        if use_cache:
+            with self._cache_lock:
+                if self._screen_cache is not None:
+                    if time.time() - self._screen_cache_time < cache_ttl:
+                        return self._screen_cache
+
+        for attempt in range(2):
+            try:
+                result = self.device.screencap()
+                if use_cache:
+                    with self._cache_lock:
+                        self._screen_cache = result
+                        self._screen_cache_time = time.time()
+                return result
+            except Exception as e:
+                if not self._is_connection_error(e):
+                    logger.error(f"[端口 {self.port}] 截图失败: {e}")
+                    return None
+                if attempt == 0:
+                    logger.warning(f"[端口 {self.port}] 截图时检测到设备断开: {e}")
+                    self.invalidate_screen_cache()
+                    if not self.reconnect():
+                        return None
+                else:
+                    logger.error(f"[端口 {self.port}] 重连后截图仍然失败: {e}")
+                    return None
 
     def invalidate_screen_cache(self):
         """清除截图缓存，在点击/滑动等改变屏幕的操作后调用"""
@@ -164,9 +259,12 @@ class ADBService:
             return
         try:
             self.device.shell(f"input tap {int(x)} {int(y)}")
-            logger.debug(f"[端口 {self.port}] 点击坐标: ({x}, {y})")
         except Exception as e:
-            logger.error(f"[端口 {self.port}] 点击失败: {e}")
+            if self._is_connection_error(e):
+                logger.warning(f"[端口 {self.port}] 点击时设备断开: {e}")
+                self.reconnect()
+            else:
+                logger.error(f"[端口 {self.port}] 点击失败: {e}")
 
     def swipe(self, x1, y1, x2, y2, duration=500):
         """
@@ -181,7 +279,11 @@ class ADBService:
             self.device.shell(f"input swipe {int(x1)} {int(y1)} {int(x2)} {int(y2)} {int(duration)}")
             logger.debug(f"[端口 {self.port}] 从 ({x1}, {y1}) 滑动到 ({x2}, {y2})")
         except Exception as e:
-            logger.error(f"[端口 {self.port}] 滑动失败: {e}")
+            if self._is_connection_error(e):
+                logger.warning(f"[端口 {self.port}] 滑动时设备断开: {e}")
+                self.reconnect()
+            else:
+                logger.error(f"[端口 {self.port}] 滑动失败: {e}")
 
     def shell(self, cmd):
         """
@@ -190,7 +292,15 @@ class ADBService:
         """
         if not self.device:
             return None
-        return self.device.shell(cmd)
+        try:
+            return self.device.shell(cmd)
+        except Exception as e:
+            if self._is_connection_error(e):
+                logger.warning(f"[端口 {self.port}] shell 时设备断开: {e}")
+                self.reconnect()
+            else:
+                logger.error(f"[端口 {self.port}] shell 失败: {e}")
+            return None
 
     def get_screen_size(self) -> tuple:
         """

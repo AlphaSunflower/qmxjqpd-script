@@ -1,14 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_dynamic_libs
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs
 
 datas = [('config', 'config'), ('resources', 'resources')]
 binaries = []
-hiddenimports = []
-binaries += collect_dynamic_libs('onnxruntime')
+hiddenimports = ['onnxruntime']
 tmp_ret = collect_all('cv2')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+datas += [(src, dst) for src, dst in tmp_ret[0] if 'cv2/data' not in src]
+binaries += [(src, dst) for src, dst in tmp_ret[1] if 'opencv_videoio_ffmpeg' not in src]
+hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('rapidocr_onnxruntime')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('customtkinter')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 

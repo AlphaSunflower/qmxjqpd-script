@@ -1,0 +1,24 @@
+{
+    "multi_instance_count": 1,
+    "ports": [
+        16384
+    ],
+    "click_offset": 10,
+    "strategy_options": {
+        "dynasty_all": {
+            "ending_good": true,
+            "sending_drawing": true,
+            "dancing": true,
+            "turn_off": true
+        }
+    },
+    "cpu_throttle_enabled": true,
+    "cpu_threshold_percent": 25,
+    "midnight_enabled": false,
+    "version": "1.0.0",
+    "selected_group": "dynasty",
+    "selected_mode": "dynasty_all",
+    "full_auto_task": {
+        "tasks": []
+    }
+}

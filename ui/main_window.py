@@ -1,17 +1,17 @@
 import os
-import sys
 import json
 import datetime
-import tkinter as tk
 import tkinter.messagebox as messagebox
 import threading
-
 import customtkinter as ctk
-
+import psutil
 from paths import CONFIG_PATH, MODE_CONFIG_PATH, save_path
 from services.logger_service import logger
-from core.strategy_manager import StrategyManager, stop_event
+from core.strategy_manager import StrategyManager, stop_event, get_screen_size, get_strategy_stats
 from core.strategies import STRATEGY_MAP
+from core.strategies.full_auto import FullAutoTaskStrategy
+from ui.theme import THEME
+from ui.full_auto_window import FullAutoWindow
 
 # 可用端口
 AVAILABLE_PORTS = [16384, 16416, 16448, 16480]
@@ -23,21 +23,6 @@ PORT_LABELS = {
 }
 
 MULTI_INSTANCE_OPTIONS = ["单开", "双开", "三开", "四开"]
-
-# 颜色主题
-THEME = {
-    "bg": "#0D1B2A",
-    "panel_bg": "#1B2838",
-    "log_bg": "#0A1628",
-    "accent": "#00D4AA",
-    "danger": "#FF6B6B",
-    "warning": "#FFB347",
-    "purple": "#A855F7",
-    "text": "#E2E8F0",
-    "subtext": "#94A3B8",
-    "border": "#2D3A4D",
-    "gold": "#FFB347",
-}
 
 
 class LogTextBox(ctk.CTkTextbox):
@@ -164,10 +149,13 @@ class MainWindow(ctk.CTk):
         # 左侧控制面板
         self._build_control_panel(content)
 
-        # 右侧日志区
-        self._build_log_panel(content)
+        # 右侧：仪表盘 + 日志
+        self._build_right_panel(content)
 
         self.after(0, self._poll_log_queue)
+        self.after(1000, self._poll_dashboard)
+        # 初始化仪表盘端口
+        self.after(500, self._init_dashboard_port)
 
         logger.info("UI 初始化完成")
 
@@ -490,6 +478,17 @@ class MainWindow(ctk.CTk):
     def _build_buttons(self, parent):
         frame = ctk.CTkFrame(parent, fg_color="transparent")
 
+        self.full_auto_btn = ctk.CTkButton(
+            frame, text="全自动任务",
+            command=self._on_open_full_auto,
+            fg_color=THEME["purple"],
+            hover_color="#7C3AED",
+            text_color="#FFFFFF",
+            font=("Microsoft YaHei UI", 13, "bold"),
+            height=40, corner_radius=8,
+        )
+        self.full_auto_btn.pack(fill="x", pady=(0, 6))
+
         self.start_btn = ctk.CTkButton(
             frame, text="开始执行",
             command=self._on_start,
@@ -515,9 +514,168 @@ class MainWindow(ctk.CTk):
 
         frame.pack(fill="x")
 
-    def _build_log_panel(self, parent):
+    def _build_right_panel(self, parent):
+        """右侧面板：仪表盘(上) + 日志(下)"""
         panel = ctk.CTkFrame(parent, fg_color=THEME["panel_bg"], corner_radius=12)
-        panel.pack(side="right", fill="both", expand=True, pady=0, ipadx=10, ipady=10)
+        panel.pack(side="right", fill="both", expand=True, padx=0, pady=0)
+
+        self._build_dashboard(panel)
+
+        sep = ctk.CTkFrame(panel, fg_color=THEME["border"], height=1)
+        sep.pack(fill="x", padx=10)
+
+        self._build_log_panel(panel)
+
+    def _build_dashboard(self, parent):
+        """构建信息仪表盘"""
+        self.dashboard_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        self.dashboard_frame.pack(fill="x", padx=8, pady=(8, 4))
+
+        # 端口选择器容器
+        self.dashboard_tabs_frame = ctk.CTkFrame(self.dashboard_frame, fg_color="transparent")
+        self.dashboard_tabs_frame.pack(fill="x", pady=(2, 4))
+
+        self._dashboard_port = None
+        self._dashboard_tab_buttons: dict = {}
+
+        # 卡片区域：两行，每行三个卡片，用 pack 排列
+        card_defs = [
+            ("连接状态", "c_status"),
+            ("CPU占用", "c_cpu"),
+            ("分辨率", "c_resolution"),
+            ("当前模式", "c_mode"),
+            ("胜利次数", "c_victory"),
+            ("失败次数", "c_failure"),
+        ]
+
+        self.dashboard_cards = {}
+        for row_idx in range(2):
+            row_frame = ctk.CTkFrame(self.dashboard_frame, fg_color="transparent")
+            row_frame.pack(fill="x", pady=2)
+            for col_idx in range(3):
+                idx = row_idx * 3 + col_idx
+                title, key = card_defs[idx]
+
+                card = ctk.CTkFrame(row_frame, fg_color=THEME["bg"], corner_radius=8)
+                card.pack(side="left", fill="x", expand=True, padx=3)
+
+                ctk.CTkLabel(
+                    card, text=title,
+                    font=("Microsoft YaHei UI", 9),
+                    text_color=THEME["subtext"],
+                ).pack(pady=(8, 0))
+
+                val = ctk.CTkLabel(
+                    card, text="--",
+                    font=("Consolas", 13, "bold"),
+                    text_color=THEME["text"],
+                )
+                val.pack(pady=(0, 8))
+
+                self.dashboard_cards[key] = val
+
+    def _refresh_dashboard_tabs(self, ports: list):
+        """重建仪表盘端口切换标签"""
+        for w in self.dashboard_tabs_frame.winfo_children():
+            w.destroy()
+        self._dashboard_tab_buttons.clear()
+
+        if not ports:
+            return
+
+        for port in ports:
+            label = PORT_LABELS.get(port, str(port))
+            btn = ctk.CTkButton(
+                self.dashboard_tabs_frame, text=label,
+                command=lambda p=port: self._switch_dashboard_port(p),
+                fg_color=THEME["border"],
+                hover_color=THEME["accent"],
+                text_color=THEME["subtext"],
+                font=("Microsoft YaHei UI", 10),
+                width=80, height=26, corner_radius=6,
+            )
+            btn.pack(side="left", padx=3)
+            self._dashboard_tab_buttons[port] = btn
+
+        self._switch_dashboard_port(ports[0])
+
+    def _switch_dashboard_port(self, port: int):
+        """切换仪表盘显示端口"""
+        self._dashboard_port = port
+        for p, btn in self._dashboard_tab_buttons.items():
+            if p == port:
+                btn.configure(fg_color=THEME["accent"], text_color=THEME["bg"])
+            else:
+                btn.configure(fg_color=THEME["border"], text_color=THEME["subtext"])
+
+    def _init_dashboard_port(self):
+        """初始化仪表盘端口（在 UI 构建完成后调用）"""
+        ports = self._get_ports()
+        if ports:
+            self._dashboard_port = ports[0]
+
+    def _poll_dashboard(self):
+        """每秒轮询更新仪表盘数据"""
+        try:
+            port = self._dashboard_port
+            if port is None:
+                ports = self._get_ports()
+                port = ports[0] if ports else None
+
+            if port is not None:
+                stats = get_strategy_stats(port)
+
+                # 连接状态
+                status = stats.get("status", "")
+                if status == "运行中":
+                    self.dashboard_cards["c_status"].configure(text="已连接", text_color=THEME["accent"])
+                else:
+                    # 检查是否有屏幕尺寸记录（说明曾连接过）
+                    size = get_screen_size(port)
+                    if size:
+                        self.dashboard_cards["c_status"].configure(text="已连接", text_color=THEME["accent"])
+                    else:
+                        self.dashboard_cards["c_status"].configure(text="未连接", text_color=THEME["danger"])
+
+                # CPU
+                cpu = psutil.cpu_percent()
+                if cpu < 25:
+                    cpu_color = THEME["accent"]
+                elif cpu < 50:
+                    cpu_color = THEME["warning"]
+                else:
+                    cpu_color = THEME["danger"]
+                self.dashboard_cards["c_cpu"].configure(text=f"{cpu:.0f}%", text_color=cpu_color)
+
+                # 分辨率
+                size = get_screen_size(port)
+                if size:
+                    self.dashboard_cards["c_resolution"].configure(text=f"{size[0]}x{size[1]}", text_color=THEME["text"])
+                else:
+                    self.dashboard_cards["c_resolution"].configure(text="--", text_color=THEME["subtext"])
+
+                # 当前模式
+                mode = stats.get("mode", "--")
+                if mode == "--":
+                    self.dashboard_cards["c_mode"].configure(text="--", text_color=THEME["subtext"])
+                else:
+                    self.dashboard_cards["c_mode"].configure(text=mode, text_color=THEME["text"])
+
+                # 胜利
+                victory = stats.get("victory", 0)
+                self.dashboard_cards["c_victory"].configure(text=str(victory), text_color=THEME["accent"])
+
+                # 失败
+                failure = stats.get("failure", 0)
+                self.dashboard_cards["c_failure"].configure(text=str(failure), text_color=THEME["danger"])
+        except Exception:
+            pass
+        finally:
+            self.after(1000, self._poll_dashboard)
+
+    def _build_log_panel(self, parent):
+        panel = ctk.CTkFrame(parent, fg_color="transparent", corner_radius=0)
+        panel.pack(fill="both", expand=True, padx=10, pady=(4, 10))
 
         header = ctk.CTkFrame(panel, fg_color="transparent")
         header.pack(fill="x", pady=(8, 8))
@@ -668,7 +826,7 @@ class MainWindow(ctk.CTk):
             pass
         finally:
             # 根据队列积压动态调整轮询间隔，有积压时加快，空闲时放慢
-            delay = 30 if logger.get_queue_size() > 10 else 150
+            delay = 100 if logger.get_queue_size() > 10 else 300
             self.after(delay, self._poll_log_queue)
 
     # ==================== 核心逻辑 ====================
@@ -827,20 +985,25 @@ class MainWindow(ctk.CTk):
         for mode_id in modes:
             if mode_id in STRATEGY_MAP:
                 strategy_cls = STRATEGY_MAP[mode_id]
+                mode_opts = dict(options.get(mode_id, {}))
                 # 为策略注入配置（用默认参数捕获当前值，防止闭包陷阱）
                 def make_strategy(cls, opts, offset_val=click_offset):
                     class Configured(cls):
                         def __init__(self, port):
                             super().__init__(port, opts, offset_val)
+                            self._strategy_name = cls.__name__
                     return Configured
-                strategy_classes.append(make_strategy(strategy_cls, options.get(mode_id, {})))
+                strategy_classes.append(make_strategy(strategy_cls, mode_opts))
             else:
                 logger.warning(f"未找到策略: {mode_id}")
 
         self.manager.start(strategy_classes)
 
+        self._refresh_dashboard_tabs(ports)
+
         self.start_btn.configure(state="disabled", text="执行中...")
         self.stop_btn.configure(state="normal")
+        self.full_auto_btn.configure(state="disabled")
 
         # 引导线程：等待屏幕尺寸 → 监控运行 → 清理
         self._bootstrap = threading.Thread(
@@ -873,17 +1036,11 @@ class MainWindow(ctk.CTk):
                 break
             time.sleep(0.5)
 
-        # 阶段 2：等待管理器停止（或所有线程自然结束）
+        # 阶段 2：等待管理器停止
         while self.manager and self.manager.is_running():
-            # 检测所有工作线程是否已提前退出（如连接失败）
-            if self.manager.threads and all(not t.is_alive() for t in self.manager.threads):
-                logger.info("所有策略线程已提前退出，开始清理")
-                break
             time.sleep(0.5)
 
-        # 阶段 3：清理（stop 回调或此处触发，_on_execution_finished 自带防重入）
-        if self.manager:
-            self.manager.join_all(timeout=5)
+        # 阶段 3：清理
         self.after(0, self._on_execution_finished)
 
     def _on_execution_finished(self):
@@ -891,6 +1048,7 @@ class MainWindow(ctk.CTk):
             return  # 已清理，防止 bootstrap 与 stop 回调重复触发
         self.start_btn.configure(state="normal", text="开始执行")
         self.stop_btn.configure(state="disabled", text="停止执行")
+        self.full_auto_btn.configure(state="normal")
         self.manager = None
         logger.info("执行完成")
 
@@ -900,6 +1058,65 @@ class MainWindow(ctk.CTk):
         logger.info("正在停止...")
         self.stop_btn.configure(state="disabled", text="停止中...")
         self.manager.stop(on_finished=lambda: self.after(0, self._on_execution_finished))
+
+    def _on_open_full_auto(self):
+        saved = self.settings.get("full_auto_task", {}).get("tasks", [])
+        FullAutoWindow(
+            master=self,
+            mode_config=self.mode_config.get("modes", {}),
+            saved_tasks=saved,
+            callback_on_start=self._on_full_auto_start,
+            callback_on_save=self._on_full_auto_save,
+        )
+
+    def _on_full_auto_start(self, task_list: list):
+        if not self._validate_ports():
+            return
+        self.error_label.configure(text="")
+
+        self._on_full_auto_save(task_list)
+
+        ports = self._get_ports()
+        click_offset = self._get_click_offset()
+
+        logger.info("=" * 50)
+        logger.info("全自动任务启动")
+        logger.info(f"端口: {ports}")
+        logger.info(f"任务数: {len(task_list)}")
+        for i, t in enumerate(task_list):
+            logger.info(f"  {i+1}. {t.get('display_name', t['mode_id'])}")
+        logger.info("=" * 50)
+
+        self.manager = StrategyManager(ports)
+
+        def make_full_auto(tasks, offset_val=click_offset):
+            config = {"tasks": tasks}
+            class ConfiguredFullAuto(FullAutoTaskStrategy):
+                def __init__(self, port):
+                    super().__init__(port, config, offset_val)
+                    self._strategy_name = "FullAutoTask"
+            return ConfiguredFullAuto
+
+        strategy_classes = [make_full_auto(task_list)]
+        self.manager.start(strategy_classes)
+
+        self._refresh_dashboard_tabs(ports)
+        self.start_btn.configure(state="disabled", text="执行中...")
+        self.stop_btn.configure(state="normal")
+        self.full_auto_btn.configure(state="disabled")
+
+        self._bootstrap = threading.Thread(
+            target=self._run_bootstrap,
+            args=(ports,),
+            daemon=True,
+            name="BootstrapThread"
+        )
+        self._bootstrap.start()
+
+    def _on_full_auto_save(self, task_list: list):
+        self.settings["full_auto_task"] = {"tasks": task_list}
+        self._save_settings()
+        logger.info("全自动任务配置已保存")
 
     def _schedule_midnight(self):
         if hasattr(self, "_midnight_timer") and self._midnight_timer:

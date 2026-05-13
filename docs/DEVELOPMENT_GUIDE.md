@@ -453,6 +453,137 @@ from core.strategies.dynasty_55 import Dynasty55Strategy  # 确保已导入
 
 ---
 
+## 全自动任务系统
+
+`core/strategies/full_auto.py` + `ui/full_auto_window.py` — 弹窗配置 → 队列编排 → 顺序执行多个策略。
+
+### 架构
+
+```
+mode_config.json (模式声明)
+        │
+        ▼
+FullAutoWindow (弹窗 UI)
+  ├── 王朝模式 (group=dynasty) ── 单选 ──┐
+  ├── 超级联赛 (group=chaolian) ── 多选 ─┤
+  ├── 每项独立选项复选框                  │
+  └── 排序（上移/下移/删除）              │
+        │                                  │
+        ▼  task_list [{mode_id, options}]  │
+FullAutoTaskStrategy._execute()           │
+  ├── 遍历 task_list                       │
+  ├── 对每项: sub_cls = STRATEGY_MAP[mode_id]
+  ├── sub = sub_cls(port, sub_opts, click_offset)
+  ├── sub.adb/image/screen_size 共享引用（不重复连接）
+  ├── sub._execute() 直接调用（不调 sub.run()，跳过连接/断开）
+  └── 跳舞/关机推迟到全部完成后统一执行
+```
+
+### 核心文件
+
+| 文件 | 职责 |
+|------|------|
+| `core/strategies/full_auto.py` | `FullAutoTaskStrategy` — 队列编排器，遍历 task_list 依次执行子策略 |
+| `ui/full_auto_window.py` | `FullAutoWindow` — 弹窗 UI，模式选择 + 选项配置 + 队列排序 |
+| `ui/theme.py` | `THEME` 颜色字典，供 main_window 和 full_auto_window 共享 |
+
+### FullAutoTaskStrategy 关键行为
+
+```python
+# core/strategies/full_auto.py
+class FullAutoTaskStrategy(BaseStrategy):
+    def _execute(self):
+        from core.strategies import STRATEGY_MAP  # 延迟导入，避免循环引用
+        tasks = self.config.get("tasks", [])
+        for i, task in enumerate(tasks):
+            mode_id = task["mode_id"]
+            sub_opts = dict(task.get("options", {}))
+            # 跳舞/关机推迟到最后
+            if sub_opts.pop("dancing", False): final_dancing = True
+            if sub_opts.pop("turn_off", False): final_turn_off = True
+            # 创建子策略 → 共享 ADB/image/screen_size → 直接调 _execute()
+            sub_cls = STRATEGY_MAP[mode_id]
+            sub = sub_cls(self.port, sub_opts, self.click_offset)
+            sub.adb = self.adb; sub.image = self.image; sub.screen_size = self.screen_size
+            sub._execute()
+            self.victory_count += sub.victory_count
+            self.failure_count += sub.failure_count
+```
+
+`sub_opts` 就是子策略的 `self.config`，所以子策略现有的 `self.config.get("ending_good")` 等读取方式**完全不需要改动**。
+
+### FullAutoWindow 模式发现机制
+
+弹窗从 `mode_config.json` 的 `modes` 字典读取所有模式，**按 `group` 字段自动分类**：
+
+- `"group": "dynasty"` → 王朝模式区（单选 RadioButton）
+- `"group": "chaolian"` → 超级联赛区（多选 CheckBox）
+
+选项复选框也从 `mode_config.json` 的 `"options"` 数组动态生成，默认值取自 `"default"` 字段。
+
+### 新增策略后需要改什么
+
+假设新增了一个超联子模式 `chaolian_xxx`：
+
+**必须改的：**
+
+1. `core/strategies/__init__.py` — 导入类 + 加入 `STRATEGY_MAP`
+2. `resources/config/mode_config.json` — 添加模式声明（`display_name`、`group`、`options`）
+
+**不需要改的：**
+
+- `core/strategies/full_auto.py` — 零改动。策略从 `STRATEGY_MAP[mode_id]` 动态查找，自动覆盖新模式。
+- `ui/full_auto_window.py` — 零改动。弹窗从 `mode_config.json` 动态读取模式和选项，自动显示新模式。
+
+### 修改现有策略选项后需要改什么
+
+假设给 `chaolian_front` 新增一个选项 `"auto_restart"`：
+
+**必须改的：**
+
+1. `resources/config/mode_config.json` — 在对应模式的 `options` 数组中添加条目
+2. 对应的策略文件 — 通过 `self.config.get("auto_restart")` 读取并使用
+
+**不需要改的：**
+
+- `ui/full_auto_window.py` — 零改动。弹窗的 `_rebuild_queue_ui()` 从 `mode_config.json` 动态读取 option 列表，自动显示新复选框。
+- `core/strategies/full_auto.py` — 零改动。策略透传 `task["options"]` 字典给子策略，新 option 自动包含在内。
+- `ui/main_window.py` — 主窗口的选项区也是从 `mode_config.json` 动态生成的，同样不需要改。
+
+### 修改现有策略逻辑后需要改什么
+
+假设修改了 `dynasty_33._execute()` 的内部逻辑：
+
+**完全不需要改全自动相关文件。** `FullAutoTaskStrategy` 只负责按队列顺序调用 `sub._execute()`，不关心子策略内部实现。子策略的 `_execute()` 签名不变（无参数，通过 `self.config` 读取选项），即可直接兼容。
+
+### 数据流总结
+
+```
+mode_config.json                    settings.json
+      │                                   │
+      │ mode_id + options 定义             │ full_auto_task.tasks (上次保存)
+      ▼                                   ▼
+FullAutoWindow.__init__(mode_config, saved_tasks)
+      │
+      │ 用户操作: 选模式 → 配选项 → 排序
+      ▼
+_collect_tasks() → task_list
+      │
+      ├── [保存配置] → callback_on_save → settings["full_auto_task"] = {"tasks": task_list}
+      │
+      └── [开始执行] → callback_on_start → Configured(FullAutoTaskStrategy, {"tasks": task_list})
+                                                 └── StrategyManager.start()
+                                                       └── FullAutoTaskStrategy._execute()
+                                                             └── 遍历 task_list → sub._execute()
+```
+
+### 调试
+
+- 如果全自动任务执行时跳过某个模式，检查日志中是否有 `"未知模式 xxx"` — 这表示该 `mode_id` 未在 `STRATEGY_MAP` 中注册。
+- 如果弹窗中某个模式没有显示，检查 `mode_config.json` 中该模式的 `group` 字段是否为 `"dynasty"` 或 `"chaolian"` — `FullAutoWindow` 只识别这两个 group。
+
+---
+
 ## 打包注意事项
 
 ### 打包命令

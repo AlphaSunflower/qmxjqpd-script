@@ -6,18 +6,23 @@
       "group": "dynasty",
       "options": [
         {
-          "id": "auto_attack",
-          "display_name": "自动进攻",
+          "id": "ending_good",
+          "display_name": "赛后点赞",
+          "default": true
+        },
+        {
+          "id": "sending_drawing",
+          "display_name": "赛中涂鸦",
+          "default": true
+        },
+        {
+          "id": "dancing",
+          "display_name": "调音台跳舞（每周任务），最后一次的位置得在调音区（否则无法跳舞）",
           "default": false
         },
         {
-          "id": "auto_defend",
-          "display_name": "自动防守",
-          "default": false
-        },
-        {
-          "id": "aggressive_rebound",
-          "display_name": "积极抢板",
+          "id": "turn_off",
+          "display_name": "打完关机",
           "default": false
         }
       ]
@@ -27,13 +32,49 @@
       "group": "dynasty",
       "options": [
         {
-          "id": "score_priority",
-          "display_name": "优先得分",
+          "id": "ending_good",
+          "display_name": "赛后点赞",
+          "default": true
+        },
+        {
+          "id": "sending_drawing",
+          "display_name": "赛中涂鸦",
+          "default": true
+        },
+        {
+          "id": "dancing",
+          "display_name": "调音台跳舞（每周任务），最后一次的位置得在调音区（否则无法跳舞）",
           "default": false
         },
         {
-          "id": "defense_priority",
-          "display_name": "防守优先",
+          "id": "turn_off",
+          "display_name": "打完关机",
+          "default": false
+        }
+      ]
+    },
+    "dynasty_all":{
+      "display_name": "王朝模式+5V5全场争霸",
+      "group": "dynasty",
+      "options": [
+        {
+          "id": "ending_good",
+          "display_name": "赛后点赞",
+          "default": true
+        },
+        {
+          "id": "sending_drawing",
+          "display_name": "赛中涂鸦",
+          "default": true
+        },
+        {
+          "id": "dancing",
+          "display_name": "调音台跳舞（每周任务），最后一次的位置得在调音区（否则无法跳舞）",
+          "default": false
+        },
+        {
+          "id": "turn_off",
+          "display_name": "打完关机",
           "default": false
         }
       ]
@@ -50,11 +91,21 @@
         {
           "id": "is_inter_match",
           "display_name": "进入局内",
-          "default": false
+          "default": true
         },
         {
           "id": "is_excu_strategy",
           "display_name": "执行战术（默认鼓舞士气）",
+          "default": true
+        },
+        {
+          "id": "dancing",
+          "display_name": "调音台跳舞（每周任务），最后一次的位置得在调音区（否则无法跳舞）",
+          "default": false
+        },
+        {
+          "id": "turn_off",
+          "display_name": "打完关机(前提勾选“只打30场”)",
           "default": false
         }
       ]
@@ -92,6 +143,16 @@
         {
           "id": "is_excu_strategy",
           "display_name": "执行战术（默认鼓舞士气）",
+          "default": false
+        },
+        {
+          "id": "dancing",
+          "display_name": "调音台跳舞（每周任务），最后一次的位置得在调音区（否则无法跳舞）",
+          "default": false
+        },
+        {
+          "id": "turn_off",
+          "display_name": "打完关机(前提勾选“只打30场”)",
           "default": false
         }
       ]

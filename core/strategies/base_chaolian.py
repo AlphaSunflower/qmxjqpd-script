@@ -8,23 +8,6 @@ from services.logger_service import logger
 class BaseChaolianStrategy(BaseStrategy):
     """超联策略基类，提供超联模式共用的方法。"""
 
-    def _init_stuck_detection(self):
-        """初始化卡死检测：记录初始状态和时间。"""
-        self._last_status = None
-        self._last_status_time = time.monotonic()
-
-    def _is_stuck(self, timeout=90):
-        """检查当前状态是否卡死（状态未变化超过指定秒数）。"""
-        if self.status != self._last_status:
-            self._last_status = self.status
-            self._last_status_time = time.monotonic()
-            return False
-        elapsed = time.monotonic() - self._last_status_time
-        if elapsed > timeout:
-            logger.warning(f"卡死检测：状态 '{self.status}' 已持续 {elapsed:.0f} 秒，触发恢复")
-            return True
-        return False
-
     def _navigate_to_chaolian_main(self):
         """导航到超联主界面：检查当前是否在超联，不在则从大厅进入。"""
         if not self.detecting_chaolian():
@@ -52,16 +35,20 @@ class BaseChaolianStrategy(BaseStrategy):
                     self.loading = None
                     logger.info("冷却完毕，战术可再次执行")
 
-    def _check_enter_match(self):
-        """检查'开始'或'进入'按钮，点击进入比赛。返回新状态或None。"""
-        if self._ocr((700, 580, 120, 40), "开始"):
-            self._tap_with_offset(770, 600, offset=3)
-            logger.debug("状态变更为：MATCHING")
-            return "MATCHING"
-        if self._ocr((700, 580, 120, 40), "进入"):
-            self._tap_with_offset(770, 600, offset=3)
-            logger.info("进入比赛")
-            return "INNER"
+    def _check_enter_match(self, screen=None):
+        if self._match_sift("chaolian_pos.png", min_match=50, screen=screen):
+            """检查'开始'或'进入'按钮，点击进入比赛。返回新状态或None。"""
+            # 批量检测开始/进入按钮（同一区域，一次 OCR 推理）
+            texts_btn = self._ocr_region((700, 580, 120, 40), screen=screen)
+            combined_btn = "".join(texts_btn)
+            if "开始" in combined_btn:
+                self._tap_with_offset(770, 600, offset=3)
+                logger.debug("状态变更为：MATCHING")
+                return "MATCHING"
+            if "进入" in combined_btn:
+                self._tap_with_offset(770, 600, offset=3)
+                logger.info("进入比赛")
+                return "INNER"
         return None
 
     def _setup_match_count(self):
@@ -82,20 +69,32 @@ class BaseChaolianStrategy(BaseStrategy):
             if self.match_count >= 30:
                 logger.info("已达到30场比赛，退出循环")
                 break
+            screen = self._grab_screen()
             if self.status == "FREE" or self.status == "MATCHING":
-                if self._ocr((700, 580, 120, 40), "开始"):
+                # 批量检测开始/进入按钮（同一区域，一次 OCR 推理）
+                texts_btn = self._ocr_region((700, 580, 120, 40), screen=screen)
+                combined_btn = "".join(texts_btn)
+                if "开始" in combined_btn:
                     self._tap_with_offset(770, 600, offset=3)
                     self.status = "MATCHING"
                     logger.debug("状态变更为：MATCHING")
-                if self._ocr((700, 580, 120, 40), "进入"):
-                    self._tap_with_offset(770, 600, offset=3)
+                elif "进入" in combined_btn:
                     logger.info("进入比赛")
                     self.status = "INNER"
             elif self.status == "INNER":
-                if self._ocr((700, 580, 120, 40), "开始"):
+                texts_btn = self._ocr_region((700, 580, 120, 40), screen=screen)
+                if "开始" in "".join(texts_btn):
                     self.match_count += self.change_count
                     logger.info(f"比赛结束，场次计数：{self.match_count}")
                     self.status = "FREE"
-            if self._is_stuck(timeout=120):
-                break
-            self._sleep(0.3)
+            if self._is_stuck(timeout=900):
+                if stop_event.is_set():
+                    break
+                logger.warning(f"[端口 {self.port}] 检测到卡死，尝试重连恢复...")
+                if self._ensure_device():
+                    self._init_stuck_detection()
+                    continue
+                else:
+                    logger.error(f"[端口 {self.port}] 重连失败，退出循环")
+                    break
+            self._sleep(1)
