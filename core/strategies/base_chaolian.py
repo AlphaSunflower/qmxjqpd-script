@@ -12,7 +12,11 @@ class BaseChaolianStrategy(BaseStrategy):
         """导航到超联主界面：检查当前是否在超联，不在则从大厅进入。"""
         if not self.detecting_chaolian():
             if self.detecting_hall():
-                self._tap_with_offset(130, 390, offset=1)
+                pos = self._match_sift("chaolian.png", min_match=50)
+                if pos:
+                    self._tap_with_offset(pos[0], pos[1], offset=1)
+                else:
+                    pass# self._tap_with_offset(990, 560, offset=1)
                 self._sleep(1.5)
 
     def _execute_tactic(self):

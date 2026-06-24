@@ -29,13 +29,13 @@ class Dynasty55Strategy(BaseStrategy):
             made_progress = False
             if self.status == "SEARCHING":
                 #检查当前是否在55模式
-                if self._ocr((1030,380,160,30),"全场"):
+                if self._ocr((910,405,140,25),"全场") or self._match_sift("dynasty_55.png", 50):
                     self.status = "FREE"
                     self._sleep(1)
                     made_progress = True
                 else:
                     #点击模式选择
-                    self._tap_with_offset(1120, 410,offset=30)
+                    self._tap_with_offset(1120, 450,offset=10)
                     self._sleep(1)
                     if self._match_sift("mode_choose.png",50):
                         self._swipe(1000,570,1000,0,500)
@@ -57,7 +57,7 @@ class Dynasty55Strategy(BaseStrategy):
 
             elif self.status == "FREE":
                 if self.detecting_hall():
-                    self._tap_with_offset(1150,570,offset=5)
+                    self._tap_with_offset(1200,450,offset=5)
                     self.status = "MATCHING"
                     self._sleep(1)
                     made_progress = True
@@ -121,7 +121,7 @@ class Dynasty55Strategy(BaseStrategy):
                     self._tap_with_offset(700, 620, offset=5)
                     self._sleep(2)
                     made_progress = True
-                elif self._ocr((930,610,120,50),"返"):
+                elif self._ocr((950,615,70,40),"返"):
                     if self.ending_good:
                         self._sleep(2)
                         self._tap_with_offset(30, 500, offset=0)

@@ -33,13 +33,14 @@ class Dynasty33Strategy(BaseStrategy):
         while not stop_event.is_set():
             made_progress = False
             if self.status == "SEARCHING":
-                if self._ocr((1050,380,120,30),"王朝"):
+                # 是否可以再次识别到王朝
+                if self._ocr((910,405,95,25),"王朝"):
                     self.status = "FREE"
                     self._sleep(1)
                     made_progress = True
                 else:
-                    self._tap_with_offset(1120, 410,offset=30)
-                    self._sleep(1)
+                    self._tap_with_offset(1120, 450,offset=10)
+                    self._sleep(2)
                     if self._match_sift("mode_choose.png",50):
                         self._sleep(1)
                         self._swipe(1000,50,1000,710,500)
@@ -59,7 +60,8 @@ class Dynasty33Strategy(BaseStrategy):
                         logger.error("未找到模式选择界面")
             elif self.status == "FREE":
                 if self.detecting_hall():
-                    self._tap_with_offset(1150,570,offset=5)
+                    # 点击匹配
+                    self._tap_with_offset(1200,450,offset=5)
                     self.status = "MATCHING"
                     self._sleep(1)
                     made_progress = True
@@ -112,7 +114,7 @@ class Dynasty33Strategy(BaseStrategy):
                     self._tap_with_offset(700, 620, offset=5)
                     self._sleep(2)
                     made_progress = True
-                elif self._ocr((930,610,120,50),"返"):
+                elif self._ocr((950, 615, 70, 40), "返"):
                     if self.ending_good:
                         self._sleep(1)
                         self._tap_with_offset(30, 500, offset=0)

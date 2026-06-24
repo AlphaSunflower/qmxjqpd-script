@@ -2,6 +2,10 @@
 
 > 基于 ADB 的 Android 模拟器自动化工具，为手游《全明星街球派对》提供多模式自动挂机功能。
 
+<p align="center">
+  <b>马刺王朝版本</b> &mdash; Spurs Dynasty Edition
+</p>
+
 ## 支持的游戏模式
 
 | 模式 | 说明 |

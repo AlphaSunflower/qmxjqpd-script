@@ -419,7 +419,7 @@ class BaseStrategy(ABC):
                 #以及其他地方
             else:
                 break
-        self._tap_with_offset(130,440,offset=0)
+        self._tap_with_offset(1150,560,offset=5)
         finish = False
         #检查
         self.dance_start_time = 0
